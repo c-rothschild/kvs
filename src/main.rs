@@ -4,7 +4,9 @@ use std;
 
 fn main() -> std::io::Result<()> {
     let mut s = Store::open("data.log")?;
-    s.set(b"score", b"12")?;
-    println!("{:?}", std::str::from_utf8(s.get(b"score").unwrap()).unwrap());
+    s.set(b"a", b"1")?;
+    s.set(b"a", b"2")?;
+    s.del(b"a")?;
+    assert!(s.get(b"a").is_none());
     Ok(())
 }
