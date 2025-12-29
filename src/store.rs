@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
-    fs::{File, OpenOptions},
-    io::{self, BufReader, BufWriter, Read, Write},
+    fs::{OpenOptions},
+    io::{self, BufReader, BufWriter, Read, Write, Seek},
     path::PathBuf,
 };
 
@@ -71,7 +71,7 @@ impl Store {
 
 
     fn replay(&mut self) -> io::Result<()> {
-        let file = match File::open(&self.log_path) {
+        let file = match OpenOptions::new().read(true).write(true).open(&self.log_path) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e),
@@ -80,6 +80,7 @@ impl Store {
         let mut r = BufReader::new(file);
 
         loop {
+            let record_start = r.stream_position()?; // byte offset current record
 
             //read op byte
             let mut op = [0u8; 1];
@@ -89,30 +90,42 @@ impl Store {
                 Err(e) => return Err(e),
             }
 
-            let key_len = match read_u32(&mut r) {
-                Ok(n) => n as usize,
-                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e),
-            };
+            // At this point, UnexpectedEof means a torn record -> truncate
+            let res: io::Result<()> = (|| {
+                let key_len = read_u32(&mut r)? as usize;
 
-            let mut key = vec![0u8; key_len];
-            r.read_exact(&mut key)?;
-            match op[0] {
-                OP_SET => {
-                    let val_len = read_u32(&mut r)? as usize;
-                    let mut val = vec![0u8; val_len];
-                    r.read_exact(&mut val)?;
-                    self.index.insert(key, val);
+                let mut key = vec![0u8; key_len];
+                r.read_exact(&mut key)?;
+
+                match op[0] {
+                    OP_SET => {
+                        let val_len = read_u32(&mut r)? as usize;
+                        let mut val = vec![0u8; val_len];
+                        r.read_exact(&mut val)?;
+                        self.index.insert(key, val);
+                    }
+                    OP_DEL => {
+                        self.index.remove(&key);
+                    }
+                    other => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("unknown op code: {other}"),
+                        ));
+                    }
                 }
-                OP_DEL => {
-                    self.index.remove(&key);
+                Ok(())
+            })();
+
+            match res {
+                Ok(()) => continue,
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    // Crash-safe tail handling: truncate torn record
+                    let f = r.get_ref();            // &File
+                    f.set_len(record_start)?;        // drop broken tail
+                    break;
                 }
-                other => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("unknown op code: {other}"),
-                    ));
-                }
+                Err(e) => return Err(e)
             }
             
         }
