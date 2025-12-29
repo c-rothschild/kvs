@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
-    fs::{OpenOptions},
-    io::{self, BufReader, BufWriter, Read, Write, Seek},
+    fs::{OpenOptions, File},
+    io::{self, BufReader, BufWriter, Read, Write, Seek, SeekFrom},
     path::PathBuf,
 };
 
@@ -11,14 +11,30 @@ const OP_DEL: u8 = 2;
 pub struct Store{
     index: HashMap<Vec<u8>, Vec<u8>>,
     log_path: PathBuf,
+    log: BufWriter<File>,
 }
 
 impl Store {
     pub fn open(log_path: impl Into<PathBuf>) -> io::Result<Self> {
         let log_path = log_path.into();
-        let mut store = Store { index: HashMap::new(), log_path };
-        store.replay()?; //rebuild index from disk
-        Ok(store)
+        
+        // open once: read+write so replay can truncate;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&log_path)?;
+
+        let mut index = HashMap::new();
+
+        file.seek(SeekFrom::Start(0))?; // seek the start for potential future changes
+        replay_into(&mut file, &mut index)?; // will truncate if torn tail
+
+        //after replay, go to EOF so appends don't overwrite anything
+        file.seek(SeekFrom::End(0))?;
+        let log = BufWriter::new(file);
+
+        Ok(Store { index, log_path, log})
 
     }
     
@@ -38,100 +54,28 @@ impl Store {
         self.index.get(key).map(|v| v.as_slice())
     }
 
-    fn append_set(&self, key: &[u8], val: &[u8]) -> io::Result<()> {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_path)?;
-        let mut w = BufWriter::new(file);
+    fn append_set(&mut self, key: &[u8], val: &[u8]) -> io::Result<()> {
 
-        w.write_all(&[OP_SET])?;
-        write_u32(&mut w, key.len() as u32)?;
-        w.write_all(key)?;
-        write_u32(&mut w, val.len() as u32)?;
-        w.write_all(val)?;
-        w.flush()?;
+        self.log.write_all(&[OP_SET])?;
+        write_u32(&mut self.log, key.len() as u32)?;
+        self.log.write_all(key)?;
+        write_u32(&mut self.log, val.len() as u32)?;
+        self.log.write_all(val)?;
+        self.log.flush()?; // TODO: add fsync modes
 
         Ok(())
     }
 
-    fn append_del(&self, key: &[u8]) -> io::Result<()> {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_path)?;
-        let mut w = BufWriter::new(file);
-
-        w.write_all(&[OP_DEL])?;
-        write_u32(&mut w, key.len() as u32)?;
-        w.write_all(key)?;
-        w.flush()?;
+    fn append_del(&mut self, key: &[u8]) -> io::Result<()> {
+        self.log.write_all(&[OP_DEL])?;
+        write_u32(&mut self.log, key.len() as u32)?;
+        self.log.write_all(key)?;
+        self.log.flush()?;
         Ok(())
     }
 
 
-    fn replay(&mut self) -> io::Result<()> {
-        let file = match OpenOptions::new().read(true).write(true).open(&self.log_path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e),
-        };
-
-        let mut r = BufReader::new(file);
-
-        loop {
-            let record_start = r.stream_position()?; // byte offset current record
-
-            //read op byte
-            let mut op = [0u8; 1];
-            match r.read_exact(&mut op) {
-                Ok(_) => {},
-                Err(e ) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e),
-            }
-
-            // At this point, UnexpectedEof means a torn record -> truncate
-            let res: io::Result<()> = (|| {
-                let key_len = read_u32(&mut r)? as usize;
-
-                let mut key = vec![0u8; key_len];
-                r.read_exact(&mut key)?;
-
-                match op[0] {
-                    OP_SET => {
-                        let val_len = read_u32(&mut r)? as usize;
-                        let mut val = vec![0u8; val_len];
-                        r.read_exact(&mut val)?;
-                        self.index.insert(key, val);
-                    }
-                    OP_DEL => {
-                        self.index.remove(&key);
-                    }
-                    other => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("unknown op code: {other}"),
-                        ));
-                    }
-                }
-                Ok(())
-            })();
-
-            match res {
-                Ok(()) => continue,
-                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                    // Crash-safe tail handling: truncate torn record
-                    let f = r.get_ref();            // &File
-                    f.set_len(record_start)?;        // drop broken tail
-                    break;
-                }
-                Err(e) => return Err(e)
-            }
-            
-        }
-
-        Ok(())
-    }
+    
 }
 
 fn write_u32<W: Write>(w: &mut W, n: u32) -> io::Result<()> {
@@ -142,4 +86,65 @@ fn read_u32<R: Read>(r: &mut R) -> io::Result<u32> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf)?;
     Ok(u32::from_le_bytes(buf))
+}
+
+
+fn replay_into(
+    file: &mut File,
+    index: &mut HashMap<Vec<u8>, Vec<u8>>,
+) -> io::Result<()> {
+
+    let reader_file = file.try_clone()?;
+    let mut r = BufReader::new(reader_file);
+   
+    loop {
+        let record_start = r.stream_position()?; // byte offset current record
+
+        //read op byte
+        let mut op = [0u8; 1];
+        match r.read_exact(&mut op) {
+            Ok(_) => {},
+            Err(e ) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
+        }
+
+        // At this point, UnexpectedEof means a torn record -> truncate
+        let res: io::Result<()> = (|| {
+            let key_len = read_u32(&mut r)? as usize;
+            let mut key = vec![0u8; key_len];
+            r.read_exact(&mut key)?;
+
+            match op[0] {
+                OP_SET => {
+                    let val_len = read_u32(&mut r)? as usize;
+                    let mut val = vec![0u8; val_len];
+                    r.read_exact(&mut val)?;
+                    index.insert(key, val);
+                }
+                OP_DEL => {
+                    index.remove(&key);
+                }
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown op code: {other}"),
+                    ));
+                }
+            }
+            Ok(())
+        })();
+
+        match res {
+            Ok(()) => continue,
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                // Crash-safe tail handling: truncate torn record
+                file.set_len(record_start)?;
+                break;
+            }
+            Err(e) => return Err(e)
+        }
+        
+    }
+
+    Ok(())
 }
