@@ -20,6 +20,7 @@ enum Command {
     Set { key: String, value: String},
     Get { key: String },
     Del { key: String },
+    Scan { prefix: String},
 }
 
 fn main() {
@@ -60,7 +61,22 @@ fn run() -> Result<()> {
                 None => println!("(nil)"),
             }
         }
+        Command::Scan{ prefix } => scan(&mut store, &prefix),
     }
 
     Ok(())
+}
+
+fn scan(store: &mut Store, prefix: &str) {
+    let keys = store.scan_prefix_str(prefix);
+    if keys.is_empty() {
+        println!("0 keys with prefix {prefix} found");
+        return;
+    }
+    let count = keys.len();
+    println!("{count} keys with prefix {prefix} found:");
+    for key in keys {
+        println!("  {key}");
+    }
+
 }

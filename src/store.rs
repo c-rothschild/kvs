@@ -70,6 +70,13 @@ impl Store {
         out
     }
 
+    pub fn scan_prefix_str(&self, prefix: &str) -> Vec<String> {
+        self.scan_prefix(prefix.as_bytes())
+            .into_iter()
+            .map(|k| String::from_utf8(k).unwrap_or_else(|_| "<non-utf8 key>".to_string()))
+            .collect()
+    }
+
     fn append_set(&mut self, key: &[u8], val: &[u8]) -> Result<()> {
 
         self.log.write_all(&[OP_SET])?;
