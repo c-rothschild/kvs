@@ -137,10 +137,11 @@ fn scan_prefix_returns_sorted_matches() {
     s.set(b"banana", b"3").unwrap();
     s.set(b"apricot", b"4").unwrap();
 
-    let keys = s.scan_prefix(b"ap");
-    let as_strings: Vec<String> = keys.into_iter().map(|k| String::from_utf8(k).unwrap()).collect();
+    let filtered_keys = s.scan_prefix_str(Some("ap"));
+    assert_eq!(filtered_keys, ["app", "apple", "apricot"]);
 
-    assert_eq!(as_strings, ["app", "apple", "apricot"]);
+    let all_keys = s.scan_prefix_str(None);
+    assert_eq!(all_keys, ["app", "apple", "apricot", "banana"]);
 
     let _ = fs::remove_file(path);
 

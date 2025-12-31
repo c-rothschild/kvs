@@ -57,26 +57,22 @@ impl Store {
     pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
         self.index.get(key).map(|v| v.as_slice())
     }
-
-    pub fn scan_prefix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        let mut out: Vec<Vec<u8>> = self
-            .index
+    pub fn scan_prefix_str(&self, prefix: Option<&str>) -> Vec<String> {
+        let mut keys: Vec<String> = self.index
             .keys()
-            .filter(|k| k.starts_with(prefix))
-            .cloned()
+            .filter(|k| {
+                match prefix {
+                    Some(p) => k.starts_with(p.as_bytes()),
+                    None => true
+                }
+            })
+            .filter_map(|k| std::str::from_utf8(k).ok())
+            .map(|s| s.to_string())
             .collect();
 
-        out.sort();
-        out
+        keys.sort();
+        keys
     }
-
-    pub fn scan_prefix_str(&self, prefix: &str) -> Vec<String> {
-        self.scan_prefix(prefix.as_bytes())
-            .into_iter()
-            .map(|k| String::from_utf8(k).unwrap_or_else(|_| "<non-utf8 key>".to_string()))
-            .collect()
-    }
-
     fn append_set(&mut self, key: &[u8], val: &[u8]) -> Result<()> {
 
         self.log.write_all(&[OP_SET])?;

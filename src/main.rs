@@ -20,7 +20,7 @@ enum Command {
     Set { key: String, value: String},
     Get { key: String },
     Del { key: String },
-    Scan { prefix: String},
+    Scan { prefix: Option<String> },
 }
 
 fn main() {
@@ -30,7 +30,9 @@ fn main() {
             eprintln!("hint: your data.log appears corrupted (likely a torn write or format mismatch). You can move/delete the log file and try again.");
         }
         // for debugging:
-        eprintln!("debug: {e:?}");
+        if std::env::var_os("KVS_DEBUG").is_some() {
+            eprintln!("debug: {e:?}");
+        }
         std::process::exit(1);
     }
 }
@@ -61,22 +63,34 @@ fn run() -> Result<()> {
                 None => println!("(nil)"),
             }
         }
-        Command::Scan{ prefix } => scan(&mut store, &prefix),
+        Command::Scan{ prefix } => scan(&store, prefix.as_deref())?,
     }
 
     Ok(())
 }
 
-fn scan(store: &mut Store, prefix: &str) {
+fn scan(store: &Store, prefix: Option<&str>) -> Result<()> {
     let keys = store.scan_prefix_str(prefix);
-    if keys.is_empty() {
-        println!("0 keys with prefix {prefix} found");
-        return;
+    
+    match prefix {
+        Some(p) => {
+            if keys.is_empty() {
+                println!("0 keys with prefix {:?} found", p);
+                return Ok(());
+            }
+            println!("{} keys with prefix {:?} found:", keys.len(), p);
+        }
+        None => {
+            if keys.is_empty() {
+                println!("0 keys found");
+                return Ok(());
+            }
+            println!("{} keys found:", keys.len());
+        }
     }
-    let count = keys.len();
-    println!("{count} keys with prefix {prefix} found:");
-    for key in keys {
-        println!("  {key}");
+    
+    for k in keys {
+        println!("  {k}");
     }
-
+    Ok(())
 }
