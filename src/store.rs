@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fs::{OpenOptions, File},
     io::{self, BufReader, BufWriter, Read, Write, Seek, SeekFrom},
-    path::PathBuf,
+    path::{PathBuf, Path},
 };
 use crate::error::{Result, StoreError};
 
@@ -18,8 +18,8 @@ pub struct Store{
 }
 
 impl Store {
-    pub fn open(log_path: impl Into<PathBuf>) -> Result<Self> {
-        let log_path = log_path.into();
+    pub fn open(log_path: impl AsRef<Path>) -> Result<Self> {
+        let log_path = log_path.as_ref().to_path_buf();
         
         // open once: read+write so replay can truncate;
         let mut file = OpenOptions::new()
@@ -38,19 +38,6 @@ impl Store {
 
         Ok(Store { index, log_path, log})
 
-    }
-
-    pub fn set_str(&mut self, key: &str, val: &str) -> Result<()> {
-        self.set(key.as_bytes(), val.as_bytes())
-    }
-
-    pub fn del_str(&mut self, key: &str) -> Result<bool> {
-        self.del(key.as_bytes())
-    }
-
-    pub fn get_str(&mut self, key: &str) -> Option<&str> {
-        let bytes = self.get(key.as_bytes())?;
-        std::str::from_utf8(bytes).ok()
     }
     
     pub fn set(&mut self, key: &[u8], val: &[u8]) -> Result<()> {
