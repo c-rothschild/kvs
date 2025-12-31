@@ -28,7 +28,6 @@ impl Store {
 
         let mut index = HashMap::new();
 
-        file.seek(SeekFrom::Start(0))?; // seek the start for potential future changes
         replay_into(&mut file, &mut index)?; // will truncate if torn tail
 
         //after replay, go to EOF so appends don't overwrite anything

@@ -1,8 +1,5 @@
-mod store;
-mod error;
-
-use store::Store;
-use crate::error::StoreError;
+use kvs::store::Store;
+use kvs::error::StoreError;
 use std;
 
 fn main() {
@@ -18,5 +15,21 @@ fn main() {
 }
 
 fn run() -> Result<(), StoreError> {
+    let mut store = match Store::open("data.log") {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(e)
+        }
+    };
+    store.set(b"marina", b"hot")?;
+
+    let marina = match store.get(b"marina"){
+        Some(e) => String::from_utf8_lossy(e).to_string(),
+        None => "None".to_string(),
+    };
+
+    println!("Marina is {}", marina);
+
+
     Ok(())
 }
