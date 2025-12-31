@@ -8,6 +8,8 @@ use crate::error::{Result, StoreError};
 
 const OP_SET: u8 = 1;
 const OP_DEL: u8 = 2;
+const MAX_KEY_LEN: usize = 1024;
+const MAX_VAL_LEN: usize = 1024 * 1024; // 1 MiB
 
 pub struct Store{
     index: HashMap<Vec<u8>, Vec<u8>>,
@@ -37,8 +39,22 @@ impl Store {
         Ok(Store { index, log_path, log})
 
     }
+
+    pub fn set_str(&mut self, key: &str, val: &str) -> Result<()> {
+        self.set(key.as_bytes(), val.as_bytes())
+    }
+
+    pub fn del_str(&mut self, key: &str) -> Result<bool> {
+        self.del(key.as_bytes())
+    }
+
+    pub fn get_str(&mut self, key: &str) -> Option<&str> {
+        let bytes = self.get(key.as_bytes())?;
+        std::str::from_utf8(bytes).ok()
+    }
     
     pub fn set(&mut self, key: &[u8], val: &[u8]) -> Result<()> {
+        validate_kv(key, Some(val))?;
         self.append_set(key, val)?;
         self.index.insert(key.to_vec(), val.to_vec());
         Ok(())
@@ -46,6 +62,7 @@ impl Store {
     }
 
     pub fn del(&mut self, key: &[u8]) -> Result<bool> {
+        validate_kv(key, None)?;
         self.append_del(key)?;
         Ok(self.index.remove(key).is_some())
     }
@@ -112,12 +129,23 @@ fn replay_into(
         // At this point, UnexpectedEof means a torn record -> truncate
         let res: Result<()> = (|| {
             let key_len = read_u32(&mut r)? as usize;
+            if key_len == 0 || key_len > MAX_KEY_LEN {
+                return Err(StoreError::CorruptLog {
+                    msg: format!("invalid key length {key_len} at offset {record_start} during replay")
+                });
+            }
+
             let mut key = vec![0u8; key_len];
             r.read_exact(&mut key)?;
 
             match op[0] {
                 OP_SET => {
                     let val_len = read_u32(&mut r)? as usize;
+                    if val_len > MAX_VAL_LEN {
+                        return Err(StoreError::CorruptLog { 
+                            msg: format!("invalid value length {val_len} at offset {record_start} during replay")
+                        });
+                    }
                     let mut val = vec![0u8; val_len];
                     r.read_exact(&mut val)?;
                     index.insert(key, val);
@@ -129,7 +157,7 @@ fn replay_into(
                 }
                 other => {
                     return Err(StoreError::CorruptLog {
-                        msg: format!("unknown op code: {other}")
+                        msg: format!("unknown op code: {other} at offset {record_start}")
                     });
                 }
             }
@@ -147,5 +175,20 @@ fn replay_into(
         
     }
 
+    Ok(())
+}
+
+fn validate_kv(key: &[u8], val: Option<&[u8]>) -> Result<()> {
+    if key.is_empty() { 
+        return Err(StoreError::InvalidInput { msg: "key cannot be empty".into() });
+    }
+    if key.len() > MAX_KEY_LEN {
+        return Err(StoreError::InvalidInput { msg: format!("key too large (>{MAX_KEY_LEN} bytes") });
+    }
+    if let Some(v) = val {
+        if v.len() > MAX_VAL_LEN {
+            return Err(StoreError::InvalidInput { msg: format!("value too large (>{MAX_VAL_LEN} bytes") });
+        }
+    }
     Ok(())
 }
