@@ -1,15 +1,22 @@
 mod store;
+mod error;
+
 use store::Store;
+use crate::error::StoreError;
 use std;
 
-fn main() -> std::io::Result<()> {
-    let mut s = Store::open("data.log")?;
-    let a = s.get(b"a");
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("error: {e}");
+        if e.is_corrupt_log() {
+            eprintln!("hint: your data.log appears corrupted (likely a torn write or format mismatch). You can move/delete the log file and try again.");
+        }
+        // for debugging:
+        eprintln!("debug: {e:?}");
+        std::process::exit(1);
+    }
+}
 
-    if let Some(v) = s.get(b"a") {
-        println!("{}", String::from_utf8_lossy(v));
-    } else {
-        println!("a not found");
-    };
+fn run() -> Result<(), StoreError> {
     Ok(())
 }

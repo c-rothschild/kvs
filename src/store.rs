@@ -4,6 +4,7 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Write, Seek, SeekFrom},
     path::PathBuf,
 };
+use crate::error::{Result, StoreError};
 
 const OP_SET: u8 = 1;
 const OP_DEL: u8 = 2;
@@ -15,7 +16,7 @@ pub struct Store{
 }
 
 impl Store {
-    pub fn open(log_path: impl Into<PathBuf>) -> io::Result<Self> {
+    pub fn open(log_path: impl Into<PathBuf>) -> Result<Self> {
         let log_path = log_path.into();
         
         // open once: read+write so replay can truncate;
@@ -38,14 +39,14 @@ impl Store {
 
     }
     
-    pub fn set(&mut self, key: &[u8], val: &[u8]) -> io::Result<()> {
+    pub fn set(&mut self, key: &[u8], val: &[u8]) -> Result<()> {
         self.append_set(key, val)?;
         self.index.insert(key.to_vec(), val.to_vec());
         Ok(())
 
     }
 
-    pub fn del(&mut self, key: &[u8]) -> std::io::Result<bool> {
+    pub fn del(&mut self, key: &[u8]) -> Result<bool> {
         self.append_del(key)?;
         Ok(self.index.remove(key).is_some())
     }
@@ -54,7 +55,7 @@ impl Store {
         self.index.get(key).map(|v| v.as_slice())
     }
 
-    fn append_set(&mut self, key: &[u8], val: &[u8]) -> io::Result<()> {
+    fn append_set(&mut self, key: &[u8], val: &[u8]) -> Result<()> {
 
         self.log.write_all(&[OP_SET])?;
         write_u32(&mut self.log, key.len() as u32)?;
@@ -66,7 +67,7 @@ impl Store {
         Ok(())
     }
 
-    fn append_del(&mut self, key: &[u8]) -> io::Result<()> {
+    fn append_del(&mut self, key: &[u8]) -> Result<()> {
         self.log.write_all(&[OP_DEL])?;
         write_u32(&mut self.log, key.len() as u32)?;
         self.log.write_all(key)?;
@@ -78,11 +79,12 @@ impl Store {
     
 }
 
-fn write_u32<W: Write>(w: &mut W, n: u32) -> io::Result<()> {
-    w.write_all(&n.to_le_bytes())
+fn write_u32<W: Write>(w: &mut W, n: u32) -> Result<()> {
+    w.write_all(&n.to_le_bytes())?;
+    Ok(())
 }
 
-fn read_u32<R: Read>(r: &mut R) -> io::Result<u32> {
+fn read_u32<R: Read>(r: &mut R) -> Result<u32> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf)?;
     Ok(u32::from_le_bytes(buf))
@@ -92,7 +94,7 @@ fn read_u32<R: Read>(r: &mut R) -> io::Result<u32> {
 fn replay_into(
     file: &mut File,
     index: &mut HashMap<Vec<u8>, Vec<u8>>,
-) -> io::Result<()> {
+) -> Result<()> {
 
     let reader_file = file.try_clone()?;
     let mut r = BufReader::new(reader_file);
@@ -105,11 +107,11 @@ fn replay_into(
         match r.read_exact(&mut op) {
             Ok(_) => {},
             Err(e ) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(e),
+            Err(e) => return Err(StoreError::Io(e)),
         }
 
         // At this point, UnexpectedEof means a torn record -> truncate
-        let res: io::Result<()> = (|| {
+        let res: Result<()> = (|| {
             let key_len = read_u32(&mut r)? as usize;
             let mut key = vec![0u8; key_len];
             r.read_exact(&mut key)?;
@@ -120,28 +122,28 @@ fn replay_into(
                     let mut val = vec![0u8; val_len];
                     r.read_exact(&mut val)?;
                     index.insert(key, val);
+                    Ok(())
                 }
                 OP_DEL => {
                     index.remove(&key);
+                    Ok(())
                 }
                 other => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("unknown op code: {other}"),
-                    ));
+                    return Err(StoreError::CorruptLog {
+                        msg: format!("unknown op code: {other}")
+                    });
                 }
             }
-            Ok(())
         })();
 
         match res {
             Ok(()) => continue,
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+            Err(StoreError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
                 // Crash-safe tail handling: truncate torn record
                 file.set_len(record_start)?;
                 break;
             }
-            Err(e) => return Err(e)
+            Err(e) => return Err(e),
         }
         
     }
