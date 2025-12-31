@@ -58,6 +58,18 @@ impl Store {
         self.index.get(key).map(|v| v.as_slice())
     }
 
+    pub fn scan_prefix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+        let mut out: Vec<Vec<u8>> = self
+            .index
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect();
+
+        out.sort();
+        out
+    }
+
     fn append_set(&mut self, key: &[u8], val: &[u8]) -> Result<()> {
 
         self.log.write_all(&[OP_SET])?;

@@ -126,3 +126,22 @@ fn torn_tail_is_truncated_and_does_not_lose_prior_records() {
     let _ = fs::remove_file(path);
 
 }
+
+#[test]
+fn scan_prefix_returns_sorted_matches() {
+    let path = fresh_log_path("scan_prefix");
+    let mut s = Store::open(&path).unwrap();
+
+    s.set(b"app", b"1").unwrap();
+    s.set(b"apple", b"2").unwrap();
+    s.set(b"banana", b"3").unwrap();
+    s.set(b"apricot", b"4").unwrap();
+
+    let keys = s.scan_prefix(b"ap");
+    let as_strings: Vec<String> = keys.into_iter().map(|k| String::from_utf8(k).unwrap()).collect();
+
+    assert_eq!(as_strings, ["app", "apple", "apricot"]);
+
+    let _ = fs::remove_file(path);
+
+}

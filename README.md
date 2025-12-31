@@ -7,6 +7,9 @@
     - io errors
     - corrupt log
     - invalid input
+5. Command-line interface  
+    - get, set, del commands
+    - --log option for custom log path (defaults to data.log)
 
 
 
