@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fs::{OpenOptions, File},
     io::{self, BufReader, BufWriter, Read, Write, Seek, SeekFrom},
-    path::{PathBuf, Path},
+    path::Path,
 };
 use crate::error::{Result, StoreError};
 
@@ -13,7 +13,6 @@ const MAX_VAL_LEN: usize = 1024 * 1024; // 1 MiB
 
 pub struct Store{
     index: HashMap<Vec<u8>, Vec<u8>>,
-    log_path: PathBuf,
     log: BufWriter<File>,
 }
 
@@ -36,7 +35,7 @@ impl Store {
         file.seek(SeekFrom::End(0))?;
         let log = BufWriter::new(file);
 
-        Ok(Store { index, log_path, log})
+        Ok(Store { index, log})
 
     }
     
