@@ -2,6 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 
+use kvs::config::StoreOptions;
 use kvs::store::Store;
 
 fn fresh_log_path(test_name: &str) -> PathBuf {
@@ -18,7 +19,7 @@ fn fresh_log_path(test_name: &str) -> PathBuf {
 #[test]
 fn set_get_roundtrip() {
     let path = fresh_log_path("set_get_roundtrip");
-    let mut s = Store::open(&path).unwrap();
+    let mut s = Store::open(&path, StoreOptions::default()).unwrap();
 
     s.set(b"score", b"12").unwrap();
     assert_eq!(s.get(b"score").unwrap(), b"12");
@@ -30,7 +31,7 @@ fn set_get_roundtrip() {
 #[test]
 fn overwrite_last_write_wins() {
     let path = fresh_log_path("overwrite_last_write_wins");
-    let mut s = Store::open(&path).unwrap();
+    let mut s = Store::open(&path, StoreOptions::default()).unwrap();
 
     s.set(b"k", b"v1").unwrap();
     s.set(b"k", b"v2").unwrap();
@@ -43,7 +44,7 @@ fn overwrite_last_write_wins() {
 #[test]
 fn del_removes_key() {
     let path = fresh_log_path("del_removes_key");
-    let mut s = Store::open(&path).unwrap();
+    let mut s = Store::open(&path, StoreOptions::default()).unwrap();
 
     s.set(b"a", b"1").unwrap();
     let existed = s.del(b"a").unwrap();
@@ -57,7 +58,7 @@ fn del_removes_key() {
 #[test]
 fn del_missing_returns_false_and_keeps_missing() {
     let path = fresh_log_path("del_missing_returns_false_and_keeps_missing");
-    let mut s = Store::open(&path).unwrap();
+    let mut s = Store::open(&path, StoreOptions::default()).unwrap();
 
     let existed = s.del(b"nope").unwrap();
     assert!(!existed);
@@ -72,14 +73,14 @@ fn reopen_replays_state() {
     let path = fresh_log_path("reopen_replays_state");
     
     {
-        let mut s = Store::open(&path).unwrap();
+        let mut s = Store::open(&path, StoreOptions::default()).unwrap();
         s.set(b"a", b"1").unwrap();
         s.set(b"b", b"2").unwrap();
         s.del(b"a").unwrap();
     }
 
     {
-        let s = Store::open(&path).unwrap();
+        let s = Store::open(&path, StoreOptions::default()).unwrap();
         assert!(s.get(b"a").is_none());
         assert_eq!(s.get(b"b").unwrap(), b"2");
     }
@@ -93,7 +94,7 @@ fn torn_tail_is_truncated_and_does_not_lose_prior_records() {
 
     // Write some records 
     {
-        let mut s = Store::open(&path).unwrap();
+        let mut s = Store::open(&path, StoreOptions::default()).unwrap();
         s.set(b"a", b"1").unwrap();
         s.set(b"b", b"2").unwrap();
         s.set(b"c", b"3").unwrap();
@@ -112,7 +113,7 @@ fn torn_tail_is_truncated_and_does_not_lose_prior_records() {
 
     // Reopen should truncate broken tail and keep earlier keys
     {
-        let s = Store::open(&path).unwrap();
+        let s = Store::open(&path, StoreOptions::default()).unwrap();
         assert_eq!(s.get(b"a").unwrap(), b"1");
         assert_eq!(s.get(b"b").unwrap(), b"2");
         // "c" might be missing depending on where the cut landed; the point is:
@@ -130,7 +131,7 @@ fn torn_tail_is_truncated_and_does_not_lose_prior_records() {
 #[test]
 fn scan_prefix_returns_sorted_matches() {
     let path = fresh_log_path("scan_prefix");
-    let mut s = Store::open(&path).unwrap();
+    let mut s = Store::open(&path, StoreOptions::default()).unwrap();
 
     s.set(b"app", b"1").unwrap();
     s.set(b"apple", b"2").unwrap();

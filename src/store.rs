@@ -4,7 +4,11 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Write, Seek, SeekFrom},
     path::Path,
 };
-use crate::error::{Result, StoreError};
+use crate::{
+    error::{Result, StoreError},
+    config::{Durability, StoreOptions},
+};
+
 
 const OP_SET: u8 = 1;
 const OP_DEL: u8 = 2;
@@ -14,10 +18,12 @@ const MAX_VAL_LEN: usize = 1024 * 1024; // 1 MiB
 pub struct Store{
     index: HashMap<Vec<u8>, Vec<u8>>,
     log: BufWriter<File>,
+    durability: Durability,
+    pending_sync_writes: u64,
 }
 
 impl Store {
-    pub fn open(log_path: impl AsRef<Path>) -> Result<Self> {
+    pub fn open(log_path: impl AsRef<Path>, opts: StoreOptions) -> Result<Self> {
         let log_path = log_path.as_ref().to_path_buf();
         
         // open once: read+write so replay can truncate;
@@ -35,7 +41,12 @@ impl Store {
         file.seek(SeekFrom::End(0))?;
         let log = BufWriter::new(file);
 
-        Ok(Store { index, log})
+        Ok(Store { 
+            index, 
+            log,
+            durability: opts.durability,
+            pending_sync_writes: 0,
+        })
 
     }
     
@@ -79,7 +90,7 @@ impl Store {
         self.log.write_all(key)?;
         write_u32(&mut self.log, val.len() as u32)?;
         self.log.write_all(val)?;
-        self.log.flush()?; // TODO: add fsync modes
+        self.commit_append()?;
 
         Ok(())
     }
@@ -88,7 +99,30 @@ impl Store {
         self.log.write_all(&[OP_DEL])?;
         write_u32(&mut self.log, key.len() as u32)?;
         self.log.write_all(key)?;
-        self.log.flush()?;
+        self.commit_append()?;
+        Ok(())
+    }
+
+    fn commit_append(&mut self) -> Result<()> {
+        match self.durability {
+            Durability::Flush => {
+                self.log.flush()?;
+            },
+            Durability::FsyncAlways => {
+                self.log.flush()?;
+                self.log.get_ref().sync_data()?; // OS -> disk (data)
+            },
+            Durability::FsyncEveryN(n) => {
+                self.pending_sync_writes += 1;
+
+                self.log.flush()?;
+
+                if n > 0 && self.pending_sync_writes >= n {
+                    self.log.get_ref().sync_data()?;
+                    self.pending_sync_writes = 0;
+                }
+            }
+        }
         Ok(())
     }
 

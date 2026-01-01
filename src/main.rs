@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use kvs::config::{Durability, StoreOptions};
 use std::path::PathBuf;
 
 use kvs::store::Store;
@@ -11,8 +12,26 @@ struct Cli {
     #[arg(long, default_value = "data.log")]
     log: PathBuf,
 
+    #[arg(long, default_value = "flush", value_parser = parse_durability)]
+    durability: Durability,
+
     #[command(subcommand)]
     cmd: Command,
+}
+
+fn parse_durability(s: &str) -> std::result::Result<Durability, String> {
+    match s {
+        "flush" => Ok(Durability::Flush),
+        "fsync-always" => Ok(Durability::FsyncAlways),
+        s if s.starts_with("fsync-every-n:") => {
+            let n = s.strip_prefix("fsync-every-n:")
+                .unwrap()
+                .parse::<u64>()
+                .map_err(|e| format!("invalid number: {e}"))?;
+            Ok(Durability::FsyncEveryN(n))
+        }
+        _ => Err(format!("invalid durability mode: {s}. Use 'flush', 'fsync-always', or 'fsync-every-n:<number>'"))
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -40,7 +59,11 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    let mut store = Store::open(&cli.log)?;
+    let opts = StoreOptions {
+        durability: cli.durability
+    };
+
+    let mut store = Store::open(&cli.log, opts)?;
 
     match cli.cmd {
         Command::Set { key, value } => {
