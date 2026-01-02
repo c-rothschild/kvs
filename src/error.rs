@@ -12,6 +12,9 @@ pub enum StoreError {
 
     // Invalid CLI keys/values (empty key, too large, etc.)
     InvalidInput { msg: String },
+
+    // Actor/channel Errors
+    StoreClosed { msg: String },
 }
 
 impl fmt::Display for StoreError {
@@ -19,7 +22,8 @@ impl fmt::Display for StoreError {
         match self {
             StoreError::Io(e) => write!(f, "{e}"),
             StoreError::CorruptLog { msg } => write!(f, "corrupt log: {msg}"),
-            StoreError::InvalidInput { msg } => write!(f, "invalid input: {msg}")
+            StoreError::InvalidInput { msg } => write!(f, "invalid input: {msg}"),
+            StoreError::StoreClosed { msg} => write!(f, "store closed: {msg}"),
         }
     }
 }

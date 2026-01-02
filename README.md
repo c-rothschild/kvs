@@ -10,6 +10,7 @@
 5. Command-line interface  
     - get, set, del commands
     - --log option for custom log path (defaults to data.log)
+6. Durability Mode 
 
 
 

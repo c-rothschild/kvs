@@ -126,6 +126,15 @@ impl Store {
         Ok(())
     }
 
+    pub fn shutdown(mut self) -> Result<()> {
+        // Ensure everything makes it out
+        self.log.flush()?;
+        if !matches!(self.durability, Durability::Flush) {
+            self.log.get_ref().sync_data()?;
+        }
+        Ok(())
+    }
+
 
     
 }
@@ -158,7 +167,7 @@ fn replay_into(
         match r.read_exact(&mut op) {
             Ok(_) => {},
             Err(e ) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(StoreError::Io(e)),
+            Err(e) => return Err(e.into()),
         }
 
         // At this point, UnexpectedEof means a torn record -> truncate
@@ -202,7 +211,7 @@ fn replay_into(
             Ok(()) => continue,
             Err(StoreError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
                 // Crash-safe tail handling: truncate torn record
-                file.set_len(record_start)?;
+                r.get_ref().set_len(record_start)?;
                 break;
             }
             Err(e) => return Err(e),
@@ -218,11 +227,11 @@ fn validate_kv(key: &[u8], val: Option<&[u8]>) -> Result<()> {
         return Err(StoreError::InvalidInput { msg: "key cannot be empty".into() });
     }
     if key.len() > MAX_KEY_LEN {
-        return Err(StoreError::InvalidInput { msg: format!("key too large (>{MAX_KEY_LEN} bytes") });
+        return Err(StoreError::InvalidInput { msg: format!("key too large (>{MAX_KEY_LEN} bytes)") });
     }
     if let Some(v) = val {
         if v.len() > MAX_VAL_LEN {
-            return Err(StoreError::InvalidInput { msg: format!("value too large (>{MAX_VAL_LEN} bytes") });
+            return Err(StoreError::InvalidInput { msg: format!("value too large (>{MAX_VAL_LEN} bytes)") });
         }
     }
     Ok(())

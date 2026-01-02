@@ -28,6 +28,9 @@ fn parse_durability(s: &str) -> std::result::Result<Durability, String> {
                 .unwrap()
                 .parse::<u64>()
                 .map_err(|e| format!("invalid number: {e}"))?;
+            if n == 0 {
+                return Err("fsync-every-n value must be greater than 0".to_string());
+            }
             Ok(Durability::FsyncEveryN(n))
         }
         _ => Err(format!("invalid durability mode: {s}. Use 'flush', 'fsync-always', or 'fsync-every-n:<number>'"))
@@ -89,6 +92,7 @@ fn run() -> Result<()> {
         Command::Scan{ prefix } => scan(&store, prefix.as_deref())?,
     }
 
+    store.shutdown()?;
     Ok(())
 }
 
