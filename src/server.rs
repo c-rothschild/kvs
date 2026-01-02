@@ -18,6 +18,10 @@ pub enum StoreMessage {
         key: Vec<u8>,
         respond_to: oneshot::Sender<Result<bool>>,
     },
+    Scan {
+        prefix: Option<String>,
+        respond_to: oneshot::Sender<Result<Vec<String>>>,
+    }
 }
 
 pub struct StoreActor {
@@ -45,6 +49,10 @@ impl StoreActor {
                 StoreMessage::Del { key, respond_to } => {
                     let result = self.store.del(&key);
                     let _ = respond_to.send(result);
+                },
+                StoreMessage::Scan { prefix, respond_to } => {
+                    let result = self.store.scan_prefix_str(prefix.as_deref());
+                    let _ = respond_to.send(Ok(result));
                 }
             }
         }
@@ -97,6 +105,19 @@ impl StoreHandle {
             respond_to: tx,
         };
 
+        self.sender.send(msg)
+            .map_err(|_| StoreError::StoreClosed { msg: "actor closed".into() })?;
+
+        rx.await
+            .map_err(|_| StoreError::StoreClosed { msg: "response channel closed".into() })?
+    }
+
+    pub async fn scan(&self, prefix: Option<&str>) -> Result<Vec<String>> {
+        let (tx, rx) = oneshot::channel();
+        let msg = StoreMessage::Scan {
+            prefix: prefix.map(|s| s.to_string()),
+            respond_to: tx,
+        };
         self.sender.send(msg)
             .map_err(|_| StoreError::StoreClosed { msg: "actor closed".into() })?;
 
@@ -176,9 +197,25 @@ async fn handle_client(mut stream: TcpStream, store: StoreHandle) -> Result<()> 
                     }
                 }
             }
+            "SCAN" if parts.len() >= 1 => {
+                let prefix = parts.get(1).map(|s| *s);
+                match store.scan(prefix).await {
+                    Ok(keys) => {
+                        for key in keys {
+                            writer.write_all(key.as_bytes()).await?;
+                            writer.write_all(b"\n").await?;
+                        }
+                        writer.write_all(b"OK\n").await?;
+                    }
+                    Err(e) => {
+                        writer.write_all(format!("ERROR: {e}\n").as_bytes()).await?;
+                    }
+                }
+            }
             _ => {
                 writer.write_all(b"ERROR: invalid command\n").await?;
             }
+            
         }
     }
     Ok(())
