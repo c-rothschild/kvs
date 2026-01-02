@@ -1,9 +1,12 @@
 use clap::{Parser, Subcommand};
 use kvs::config::{Durability, StoreOptions};
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
 
 use kvs::store::Store;
 use kvs::error::Result;
+use kvs::server::{StoreActor, StoreHandle};
 
 #[derive(Parser, Debug)]
 #[command(name = "kvs", version, about = "Tiny persistent key-value store")]
@@ -43,6 +46,10 @@ enum Command {
     Get { key: String },
     Del { key: String },
     Scan { prefix: Option<String> },
+    Server {
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        addr: String,
+    }
 }
 
 fn main() {
@@ -61,7 +68,6 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
-
     let opts = StoreOptions {
         durability: cli.durability
     };
@@ -69,6 +75,27 @@ fn run() -> Result<()> {
     let mut store = Store::open(&cli.log, opts)?;
 
     match cli.cmd {
+        Command::Server { addr } => {
+
+            // create channel
+            let (sender, receiver) = mpsc::channel();
+
+            // create actor
+            let actor = StoreActor::new(receiver, store);
+
+            // Spawn actor thread
+            thread::spawn(move || {
+                actor.run();
+            });
+
+            // create handle
+            let handle = StoreHandle::new(sender);
+
+            // Run server
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(kvs::server::run_server(&addr, handle))?;
+
+        }
         Command::Set { key, value } => {
             store.set(key.as_bytes(), value.as_bytes())?;
             println!("OK");
@@ -91,8 +118,6 @@ fn run() -> Result<()> {
         }
         Command::Scan{ prefix } => scan(&store, prefix.as_deref())?,
     }
-
-    store.shutdown()?;
     Ok(())
 }
 
