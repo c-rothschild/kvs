@@ -15,3 +15,10 @@ impl Default for StoreOptions {
         Self { durability: Durability::Flush}
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct SnapshotMeta {
+    pub snapshot_number: u64,
+    pub snapshot_path: std::path::PathBuf,
+    pub log_path: std::path::PathBuf,
+}

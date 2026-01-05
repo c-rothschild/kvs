@@ -2,11 +2,12 @@ use std::{
     collections::HashMap,
     fs::{OpenOptions, File},
     io::{self, BufReader, BufWriter, Read, Write, Seek, SeekFrom},
-    path::Path,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 use crate::{
     error::{Result, StoreError},
-    config::{Durability, StoreOptions},
+    config::{Durability, StoreOptions, SnapshotMeta},
 };
 
 
@@ -16,24 +17,48 @@ const MAX_KEY_LEN: usize = 1024;
 const MAX_VAL_LEN: usize = 1024 * 1024; // 1 MiB
 
 pub struct Store{
-    index: HashMap<Vec<u8>, Vec<u8>>,
+    index: HashMap<Vec<u8>, Arc<Vec<u8>>>,
     log: BufWriter<File>,
     durability: Durability,
     pending_sync_writes: u64,
+    snapshot_number: u64, // Track current snapshot number
 }
 
 impl Store {
     pub fn open(log_path: impl AsRef<Path>, opts: StoreOptions) -> Result<Self> {
         let log_path = log_path.as_ref().to_path_buf();
+
+        let base_dir = log_path.parent()
+            .unwrap_or_else(|| Path::new("."));
+        let manifest_path = base_dir.join("MANIFEST");
+
+        let manifest = read_manifest(&manifest_path)?;
+
+        let mut index = HashMap::new();
+        let actual_log_path: PathBuf;
+        let snapshot_number: u64;
+
+        match manifest {
+            Some(meta) => {
+                actual_log_path = meta.log_path;
+                snapshot_number = meta.snapshot_number;
+
+                if meta.snapshot_path.exists() {
+                    load_snapshot(&meta.snapshot_path, &mut index)?;
+                }
+            }
+            None => {
+                actual_log_path = log_path.clone();
+                snapshot_number = 0;
+            }
+        }
         
         // open once: read+write so replay can truncate;
         let mut file = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
-            .open(&log_path)?;
-
-        let mut index = HashMap::new();
+            .open(&actual_log_path)?;
 
         replay_into(&mut file, &mut index)?; // will truncate if torn tail
 
@@ -46,6 +71,7 @@ impl Store {
             log,
             durability: opts.durability,
             pending_sync_writes: 0,
+            snapshot_number,
         })
 
     }
@@ -53,7 +79,7 @@ impl Store {
     pub fn set(&mut self, key: &[u8], val: &[u8]) -> Result<()> {
         validate_kv(key, Some(val))?;
         self.append_set(key, val)?;
-        self.index.insert(key.to_vec(), val.to_vec());
+        self.index.insert(key.to_vec(), Arc::new(val.to_vec()));
         Ok(())
 
     }
@@ -135,7 +161,89 @@ impl Store {
         Ok(())
     }
 
+    // Renames the old log file and creates a fresh log file at the original path
+    pub fn rotate_log(&mut self, log_path: &Path) -> Result<PathBuf> {
+        
+        use std::time::SystemTime;
 
+        // generate unique name for old log
+        let timestamp = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let old_log_path = log_path.with_extension(format!("log.{timestamp}"));
+
+        // flush and close current log
+        self.log.flush()?;
+        self.log.get_ref().sync_all()?; // sync everything to disk
+
+        // Move curent log to the rotated name
+        std::fs::rename(log_path, &old_log_path)?;
+
+        // Open fresh log file
+        let mut file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(log_path)?;
+
+        file.seek(SeekFrom::End(0))?;
+        self.log = BufWriter::new(file);
+
+        Ok(old_log_path)
+    }
+
+    pub fn snapshot_view(&self) -> HashMap<Vec<u8>, Arc<Vec<u8>>> {
+        // Clone the entire HashMap
+        self.index.clone()
+    }
+    
+    fn next_snapshot_number(&mut self) -> u64 {
+        self.snapshot_number += 1;
+        self.snapshot_number
+    }
+
+    pub fn create_snapshot(
+        &mut self,
+        log_path: &Path,
+        base_dir: &Path,
+    ) -> Result<SnapshotMeta> {
+        // rotate to new log immediately
+        let old_log_path = self.rotate_log(log_path)?;
+
+        let view = self.snapshot_view();
+
+        // get next snapshot number
+        let snapshot_num = self.next_snapshot_number();
+        let snapshot_path = base_dir.join(format!("snapshot:{:04}.snap", snapshot_num));
+
+        // write snapshot in current thread
+        write_snapshot(view, &snapshot_path)?;
+
+        // write manifest
+        let manifest_path = base_dir.join("MANIFEST");
+        let meta = SnapshotMeta {
+            snapshot_number: snapshot_num,
+            snapshot_path: snapshot_path.clone(),
+            log_path: log_path.to_path_buf(),
+        };
+        write_manifest(&manifest_path, &meta)?;
+
+        // clean up old files
+        cleanup_old_snapshots(base_dir, snapshot_num)?;
+
+        // delete the rotated log
+        if old_log_path.exists() {
+            std::fs::remove_file(&old_log_path)?;
+        }
+
+        Ok(meta)
+
+    }
+
+    
+    
     
 }
 
@@ -153,7 +261,7 @@ fn read_u32<R: Read>(r: &mut R) -> Result<u32> {
 
 fn replay_into(
     file: &mut File,
-    index: &mut HashMap<Vec<u8>, Vec<u8>>,
+    index: &mut HashMap<Vec<u8>, Arc<Vec<u8>>>,
 ) -> Result<()> {
 
     let reader_file = file.try_clone()?;
@@ -192,7 +300,7 @@ fn replay_into(
                     }
                     let mut val = vec![0u8; val_len];
                     r.read_exact(&mut val)?;
-                    index.insert(key, val);
+                    index.insert(key, Arc::new(val));
                     Ok(())
                 }
                 OP_DEL => {
@@ -234,5 +342,179 @@ fn validate_kv(key: &[u8], val: Option<&[u8]>) -> Result<()> {
             return Err(StoreError::InvalidInput { msg: format!("value too large (>{MAX_VAL_LEN} bytes)") });
         }
     }
+    Ok(())
+}
+
+// Write snapshot view to disk
+// called from backgroun thread after getting the view
+pub fn write_snapshot(
+    view: HashMap<Vec<u8>, Arc<Vec<u8>>>,
+    snapshot_path: &Path,
+) -> Result<()> {
+
+    // Open temporary file for atomi writing
+    let tmp_path = snapshot_path.with_extension("tmp");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&tmp_path)?;
+
+    let mut writer = BufWriter::new(file);
+
+    // snapshot format is same as log format
+    // [key_len: u32][key: bytes][val_len: u32][val: bytes]
+    for (key, val_arc) in view.iter() {
+        // write key
+        write_u32(&mut writer, key.len() as u32)?;
+        writer.write_all(key)?;
+
+        //write value
+        write_u32(&mut writer, val_arc.len() as u32)?;
+        writer.write_all(val_arc.as_slice())?;
+    }
+
+    // flush and sync
+    writer.flush()?;
+    writer.get_ref().sync_all()?;
+
+    // atomically rename temp file to final snapshot
+    std::fs::rename(&tmp_path, snapshot_path)?;
+
+    Ok(())
+
+
+}
+
+// write manifest file that tracks current snapshot/log
+pub fn write_manifest(
+    manifest_path: &Path,
+    snapshot_meta: &SnapshotMeta,
+) -> Result<()> {
+   let mut file = OpenOptions::new()
+    .create(true)
+    .truncate(true)
+    .write(true)
+    .open(manifest_path)?;
+
+    writeln!(
+        &mut file,
+        "{}:{}:{}",
+        snapshot_meta.snapshot_number,
+        snapshot_meta.snapshot_path.display(),
+        snapshot_meta.log_path.display()
+
+    )?;
+
+    file.sync_all()?;
+
+    Ok(())
+}
+
+fn cleanup_old_snapshots(base_dir: &Path, current_num: u64) -> Result<()> {
+    use std::fs;
+
+    let entries = fs::read_dir(base_dir)?;
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with("snapshot-") && name.ends_with(".snap") {
+                // extract number
+                if let Some(num_str) = name.strip_prefix("snapshot-")
+                    .and_then(|s| s.strip_suffix(".snap"))
+                {
+                    if let Ok(num) = num_str.parse::<u64>() {
+                        // delete snapshot if older than current number
+                        if num < current_num {
+                            fs::remove_file(&path)?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn read_manifest(manifest_path: &Path) -> Result<Option<SnapshotMeta>> {
+    use std::io::BufRead;
+    if !manifest_path.exists() {
+        return Ok(None);
+    }
+
+    let file = File::open(manifest_path)?;
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+
+    reader.read_line(&mut line)?;
+    let line = line.trim();
+
+    let parts: Vec<&str> = line.split(':').collect();
+    if parts.len() != 3 {
+        return Err(StoreError::CorruptLog { 
+            msg: format!("Invalid MANIFEST format: expected 3 colon-seperated parts, got {}", parts.len())
+        });
+    }
+
+    let snapshot_number: u64 = parts[0].parse()
+        .map_err(|e| StoreError::CorruptLog { 
+            msg: format!("invalid snapshot number in MANIFEST: {e}")
+        })?;
+
+    let snapshot_path = PathBuf::from(parts[1]);
+    let log_path = PathBuf::from(parts[2]);
+
+    Ok(Some(SnapshotMeta { snapshot_number, snapshot_path, log_path }))
+}
+
+fn load_snapshot(
+    snapshot_path: &Path,
+    index: &mut HashMap<Vec<u8>, Arc<Vec<u8>>>
+) -> Result<()> {
+    if !snapshot_path.exists() {
+        return Ok(());
+    }
+
+    let file = File::open(snapshot_path)?;
+    let mut reader = BufReader::new(file);
+
+    // read key-value pairs until EOF
+    loop {
+        let key_len = match read_u32(&mut reader) {
+            Ok(len) => len as usize,
+            Err(StoreError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                break;
+            }
+            Err(e) => return Err(e),
+        };
+
+        if key_len == 0 || key_len > MAX_KEY_LEN {
+            return Err(StoreError::CorruptLog {
+                 msg: format!("Invalid key length {key_len} in snapshot") 
+                });
+        }
+
+        // Read key
+        let mut key = vec![0u8; key_len];
+        reader.read_exact(&mut key)?;
+
+        let val_len = read_u32(&mut reader)? as usize;
+        if val_len > MAX_VAL_LEN {
+            return Err(StoreError::CorruptLog {
+                 msg: format!("Invalid value length {val_len} in snapshot") 
+                });
+        }
+
+        // read val
+        let mut val = vec![0u8; val_len];
+        reader.read_exact(&mut val)?;
+
+        index.insert(key, Arc::new(val));
+    }
+
     Ok(())
 }

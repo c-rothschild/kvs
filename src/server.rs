@@ -1,6 +1,8 @@
 use tokio::sync::oneshot;
 use tokio::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::mpsc;
+use crate::config::SnapshotMeta;
 use crate::error::{Result, StoreError};
 use crate::store::Store;
 // Messages that clients can send to the store actor
@@ -21,7 +23,13 @@ pub enum StoreMessage {
     Scan {
         prefix: Option<String>,
         respond_to: oneshot::Sender<Result<Vec<String>>>,
-    }
+    },
+    Snapshot {
+        log_path: PathBuf,
+        base_dir: PathBuf,
+        respond_to: oneshot::Sender<Result<SnapshotMeta>>,
+
+    },
 }
 
 pub struct StoreActor {
@@ -53,6 +61,10 @@ impl StoreActor {
                 StoreMessage::Scan { prefix, respond_to } => {
                     let result = self.store.scan_prefix_str(prefix.as_deref());
                     let _ = respond_to.send(Ok(result));
+                }
+                StoreMessage::Snapshot { log_path, base_dir, respond_to } => {
+                    let result = self.store.create_snapshot(&log_path, &base_dir);
+                    let _ = respond_to.send(result);
                 }
             }
         }
@@ -118,6 +130,21 @@ impl StoreHandle {
             prefix: prefix.map(|s| s.to_string()),
             respond_to: tx,
         };
+        self.sender.send(msg)
+            .map_err(|_| StoreError::StoreClosed { msg: "actor closed".into() })?;
+
+        rx.await
+            .map_err(|_| StoreError::StoreClosed { msg: "response channel closed".into() })?
+    }
+
+    pub async fn snapshot(&self, log_path: PathBuf, base_dir: PathBuf) -> Result<SnapshotMeta> {
+        let (tx, rx) = oneshot::channel();
+        let msg = StoreMessage::Snapshot {
+            log_path,
+            base_dir,
+            respond_to: tx,
+        };
+
         self.sender.send(msg)
             .map_err(|_| StoreError::StoreClosed { msg: "actor closed".into() })?;
 
