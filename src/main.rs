@@ -3,6 +3,7 @@ use kvs::config::{Durability, StoreOptions};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
+use std::path::Path;
 
 use kvs::store::Store;
 use kvs::error::Result;
@@ -77,6 +78,11 @@ fn run() -> Result<()> {
     match cli.cmd {
         Command::Server { addr } => {
 
+            let log_path = cli.log.clone();
+            let base_dir = cli.log.parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
+
             // create channel
             let (sender, receiver) = mpsc::channel();
 
@@ -93,7 +99,7 @@ fn run() -> Result<()> {
 
             // Run server
             let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(kvs::server::run_server(&addr, handle))?;
+            rt.block_on(kvs::server::run_server(&addr, handle, log_path, base_dir))?;
 
         }
         Command::Set { key, value } => {

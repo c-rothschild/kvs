@@ -154,7 +154,12 @@ impl StoreHandle {
 }
 
 // TCP server
-pub async fn run_server(address: &str, store_handle: StoreHandle) -> Result<()> {
+pub async fn run_server(
+    address: &str, 
+    store_handle: StoreHandle,
+    log_path: PathBuf,
+    base_dir: PathBuf,
+) -> Result<()> {
     let listener = TcpListener::bind(address).await?;
     println!("Server listening on {}", address);
 
@@ -163,16 +168,20 @@ pub async fn run_server(address: &str, store_handle: StoreHandle) -> Result<()> 
         println!("New client connected: {addr}");
         let handle = store_handle.clone();
 
+        // Clone paths for each connection
+        let log_path = log_path.clone();
+        let base_dir = base_dir.clone();
+
         // Spawn a task for each connection
         tokio::spawn(async move{
-            if let Err(e) = handle_client(socket, handle).await {
+            if let Err(e) = handle_client(socket, handle, log_path, base_dir).await {
                 eprintln!("Error handling client: {e}")
             }
         });
     }
 }
 
-async fn handle_client(mut stream: TcpStream, store: StoreHandle) -> Result<()> {
+async fn handle_client(mut stream: TcpStream, store: StoreHandle, log_path: PathBuf, base_dir: PathBuf) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     let (reader, mut writer) = stream.split();
@@ -224,7 +233,7 @@ async fn handle_client(mut stream: TcpStream, store: StoreHandle) -> Result<()> 
                     }
                 }
             }
-            "SCAN" if parts.len() >= 1 => {
+            "SCAN" => {
                 let prefix = parts.get(1).map(|s| *s);
                 match store.scan(prefix).await {
                     Ok(keys) => {
@@ -233,6 +242,18 @@ async fn handle_client(mut stream: TcpStream, store: StoreHandle) -> Result<()> 
                             writer.write_all(b"\n").await?;
                         }
                         writer.write_all(b"OK\n").await?;
+                    }
+                    Err(e) => {
+                        writer.write_all(format!("ERROR: {e}\n").as_bytes()).await?;
+                    }
+                }
+            }
+            "SNAPSHOT" => {
+                match store.snapshot(log_path.clone(), base_dir.clone()).await {
+                    Ok(meta) =>{
+                        writer.write_all(
+                            format!("OK snapshot-{:04}\n", meta.snapshot_number).as_bytes()
+                        ).await?;
                     }
                     Err(e) => {
                         writer.write_all(format!("ERROR: {e}\n").as_bytes()).await?;

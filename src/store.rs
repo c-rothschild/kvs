@@ -30,6 +30,7 @@ impl Store {
 
         let base_dir = log_path.parent()
             .unwrap_or_else(|| Path::new("."));
+        println!("base dir: {:?}", base_dir);
         let manifest_path = base_dir.join("MANIFEST");
 
         let manifest = read_manifest(&manifest_path)?;
@@ -216,7 +217,7 @@ impl Store {
 
         // get next snapshot number
         let snapshot_num = self.next_snapshot_number();
-        let snapshot_path = base_dir.join(format!("snapshot:{:04}.snap", snapshot_num));
+        let snapshot_path = base_dir.join(format!("snapshot-{:04}.snap", snapshot_num));
 
         // write snapshot in current thread
         write_snapshot(view, &snapshot_path)?;
@@ -379,7 +380,14 @@ pub fn write_snapshot(
     writer.get_ref().sync_all()?;
 
     // atomically rename temp file to final snapshot
-    std::fs::rename(&tmp_path, snapshot_path)?;
+    std::fs::rename(&tmp_path, snapshot_path)
+        .map_err(|e| {
+            StoreError::Io(io::Error::new(
+                e.kind(),
+                format!("failed to rename temporary snapshot file {:?} to {:?}: {}", 
+                    tmp_path, snapshot_path, e)
+            ))
+        })?;
 
     Ok(())
 
@@ -405,6 +413,7 @@ pub fn write_manifest(
         snapshot_meta.log_path.display()
 
     )?;
+    println!("{}", snapshot_meta.snapshot_path.display());
 
     file.sync_all()?;
 
