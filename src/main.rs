@@ -50,7 +50,8 @@ enum Command {
     Server {
         #[arg(long, default_value = "127.0.0.1:8080")]
         addr: String,
-    }
+    },
+    Snapshot,
 }
 
 fn main() {
@@ -80,8 +81,11 @@ fn run() -> Result<()> {
 
             let log_path = cli.log.clone();
             let base_dir = cli.log.parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf();
+                .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .unwrap_or_else(|_| PathBuf::from("."))
+                });
 
             // create channel
             let (sender, receiver) = mpsc::channel();
@@ -123,6 +127,13 @@ fn run() -> Result<()> {
             }
         }
         Command::Scan{ prefix } => scan(&store, prefix.as_deref())?,
+        Command::Snapshot => {
+            let base_dir = cli.log.parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
+
+            store.create_snapshot(&cli.log, &base_dir)?;
+        }
     }
     Ok(())
 }

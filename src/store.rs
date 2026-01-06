@@ -29,8 +29,12 @@ impl Store {
         let log_path = log_path.as_ref().to_path_buf();
 
         let base_dir = log_path.parent()
-            .unwrap_or_else(|| Path::new("."));
-        println!("base dir: {:?}", base_dir);
+            .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
+            .unwrap_or_else(|| {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+            });
+        // println!("base dir: {:?}", base_dir);
         let manifest_path = base_dir.join("MANIFEST");
 
         let manifest = read_manifest(&manifest_path)?;
@@ -173,7 +177,14 @@ impl Store {
             .unwrap()
             .as_secs();
 
-        let old_log_path = log_path.with_extension(format!("log.{timestamp}"));
+        let mut old_log_path = log_path.with_extension(format!("log.{timestamp}"));
+
+        if old_log_path.is_relative() {
+            if let Ok(cwd) = std::env::current_dir() {
+                old_log_path = cwd.join(&old_log_path);
+            }
+        }
+        
 
         // flush and close current log
         self.log.flush()?;
@@ -352,6 +363,10 @@ pub fn write_snapshot(
     view: HashMap<Vec<u8>, Arc<Vec<u8>>>,
     snapshot_path: &Path,
 ) -> Result<()> {
+    // Ensure parent directory exists
+    if let Some(parent) = snapshot_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
     // Open temporary file for atomi writing
     let tmp_path = snapshot_path.with_extension("tmp");
@@ -413,7 +428,7 @@ pub fn write_manifest(
         snapshot_meta.log_path.display()
 
     )?;
-    println!("{}", snapshot_meta.snapshot_path.display());
+    println!("snapshot saved to {}", snapshot_meta.snapshot_path.display());
 
     file.sync_all()?;
 
@@ -422,6 +437,18 @@ pub fn write_manifest(
 
 fn cleanup_old_snapshots(base_dir: &Path, current_num: u64) -> Result<()> {
     use std::fs;
+
+    let base_dir = if base_dir == Path::new(".") {
+        std::env::current_dir()?
+    } else {
+        base_dir.canonicalize()
+            .or_else(|_| {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(base_dir))
+                    .and_then(|p| p.canonicalize())
+            })
+            .unwrap_or_else(|_| base_dir.to_path_buf())
+    };
 
     let entries = fs::read_dir(base_dir)?;
 
