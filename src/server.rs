@@ -1,6 +1,5 @@
 use tokio::sync::oneshot;
 use tokio::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
 use std::sync::mpsc;
 use crate::config::SnapshotMeta;
 use crate::error::{Result, StoreError};
@@ -25,8 +24,6 @@ pub enum StoreMessage {
         respond_to: oneshot::Sender<Result<Vec<String>>>,
     },
     Snapshot {
-        log_path: PathBuf,
-        base_dir: PathBuf,
         respond_to: oneshot::Sender<Result<SnapshotMeta>>,
 
     },
@@ -62,8 +59,8 @@ impl StoreActor {
                     let result = self.store.scan_prefix_str(prefix.as_deref());
                     let _ = respond_to.send(Ok(result));
                 }
-                StoreMessage::Snapshot { log_path, base_dir, respond_to } => {
-                    let result = self.store.create_snapshot(&log_path, &base_dir);
+                StoreMessage::Snapshot { respond_to } => {
+                    let result = self.store.create_snapshot();
                     let _ = respond_to.send(result);
                 }
             }
@@ -137,11 +134,9 @@ impl StoreHandle {
             .map_err(|_| StoreError::StoreClosed { msg: "response channel closed".into() })?
     }
 
-    pub async fn snapshot(&self, log_path: PathBuf, base_dir: PathBuf) -> Result<SnapshotMeta> {
+    pub async fn snapshot(&self) -> Result<SnapshotMeta> {
         let (tx, rx) = oneshot::channel();
         let msg = StoreMessage::Snapshot {
-            log_path,
-            base_dir,
             respond_to: tx,
         };
 
@@ -157,8 +152,6 @@ impl StoreHandle {
 pub async fn run_server(
     address: &str, 
     store_handle: StoreHandle,
-    log_path: PathBuf,
-    base_dir: PathBuf,
 ) -> Result<()> {
     let listener = TcpListener::bind(address).await?;
     println!("Server listening on {}", address);
@@ -168,20 +161,16 @@ pub async fn run_server(
         println!("New client connected: {addr}");
         let handle = store_handle.clone();
 
-        // Clone paths for each connection
-        let log_path = log_path.clone();
-        let base_dir = base_dir.clone();
-
         // Spawn a task for each connection
         tokio::spawn(async move{
-            if let Err(e) = handle_client(socket, handle, log_path, base_dir).await {
+            if let Err(e) = handle_client(socket, handle).await {
                 eprintln!("Error handling client: {e}")
             }
         });
     }
 }
 
-async fn handle_client(mut stream: TcpStream, store: StoreHandle, log_path: PathBuf, base_dir: PathBuf) -> Result<()> {
+async fn handle_client(mut stream: TcpStream, store: StoreHandle) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     let (reader, mut writer) = stream.split();
@@ -249,7 +238,7 @@ async fn handle_client(mut stream: TcpStream, store: StoreHandle, log_path: Path
                 }
             }
             "SNAPSHOT" => {
-                match store.snapshot(log_path.clone(), base_dir.clone()).await {
+                match store.snapshot().await {
                     Ok(meta) =>{
                         writer.write_all(
                             format!("OK snapshot-{:04}\n", meta.snapshot_number).as_bytes()

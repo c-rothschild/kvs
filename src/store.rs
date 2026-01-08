@@ -19,9 +19,13 @@ const MAX_VAL_LEN: usize = 1024 * 1024; // 1 MiB
 pub struct Store{
     index: HashMap<Vec<u8>, Arc<Vec<u8>>>,
     log: BufWriter<File>,
+    log_path: PathBuf,
+    base_dir: PathBuf,
     durability: Durability,
     pending_sync_writes: u64,
     snapshot_number: u64, // Track current snapshot number
+    max_log_size: Option<u64>,
+    current_log_size: u64,
 }
 
 impl Store {
@@ -69,14 +73,19 @@ impl Store {
 
         //after replay, go to EOF so appends don't overwrite anything
         file.seek(SeekFrom::End(0))?;
+        let current_log_size = file.stream_position()?;
         let log = BufWriter::new(file);
 
         Ok(Store { 
             index, 
             log,
+            log_path: actual_log_path.clone(),
+            base_dir,
             durability: opts.durability,
             pending_sync_writes: 0,
             snapshot_number,
+            max_log_size: opts.max_log_size,
+            current_log_size,
         })
 
     }
@@ -122,6 +131,8 @@ impl Store {
         write_u32(&mut self.log, val.len() as u32)?;
         self.log.write_all(val)?;
         self.commit_append()?;
+        self.current_log_size += set_record_size(key.len(), val.len());
+        self.maybe_auto_snapshot()?;
 
         Ok(())
     }
@@ -131,6 +142,8 @@ impl Store {
         write_u32(&mut self.log, key.len() as u32)?;
         self.log.write_all(key)?;
         self.commit_append()?;
+        self.current_log_size += del_record_size(key.len());
+        self.maybe_auto_snapshot()?;
         Ok(())
     }
 
@@ -203,6 +216,8 @@ impl Store {
         file.seek(SeekFrom::End(0))?;
         self.log = BufWriter::new(file);
 
+        self.current_log_size = 0;
+
         Ok(old_log_path)
     }
 
@@ -218,32 +233,30 @@ impl Store {
 
     pub fn create_snapshot(
         &mut self,
-        log_path: &Path,
-        base_dir: &Path,
     ) -> Result<SnapshotMeta> {
         // rotate to new log immediately
-        let old_log_path = self.rotate_log(log_path)?;
+        let old_log_path = self.rotate_log(&self.log_path.clone())?;
 
         let view = self.snapshot_view();
 
         // get next snapshot number
         let snapshot_num = self.next_snapshot_number();
-        let snapshot_path = base_dir.join(format!("snapshot-{:04}.snap", snapshot_num));
+        let snapshot_path = self.base_dir.join(format!("snapshot-{:04}.snap", snapshot_num));
 
         // write snapshot in current thread
         write_snapshot(view, &snapshot_path)?;
 
         // write manifest
-        let manifest_path = base_dir.join("MANIFEST");
+        let manifest_path = self.base_dir.join("MANIFEST");
         let meta = SnapshotMeta {
             snapshot_number: snapshot_num,
             snapshot_path: snapshot_path.clone(),
-            log_path: log_path.to_path_buf(),
+            log_path: self.log_path.clone(),
         };
         write_manifest(&manifest_path, &meta)?;
 
         // clean up old files
-        cleanup_old_snapshots(base_dir, snapshot_num)?;
+        cleanup_old_snapshots(&self.base_dir, snapshot_num)?;
 
         // delete the rotated log
         if old_log_path.exists() {
@@ -255,7 +268,18 @@ impl Store {
     }
 
     
-    
+    fn maybe_auto_snapshot(&mut self) -> Result<()> {
+        let Some(max_size) = self.max_log_size else {
+            return Ok(());
+        };
+
+        if self.current_log_size >= max_size {
+            // Trigger snapshot creation
+            self.create_snapshot()?;
+        }
+
+        Ok(())
+    }
     
 }
 
@@ -268,6 +292,20 @@ fn read_u32<R: Read>(r: &mut R) -> Result<u32> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf)?;
     Ok(u32::from_le_bytes(buf))
+}
+
+fn set_record_size(key_len: usize, val_len: usize) -> u64 {
+    1 +
+    4 +
+    key_len as u64 +
+    4 +
+    val_len as u64
+}
+
+fn del_record_size(key_len: usize) -> u64 {
+    1 +
+    4 +
+    key_len as u64
 }
 
 

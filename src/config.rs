@@ -8,11 +8,15 @@ pub enum Durability {
 #[derive(Debug, Clone)]
 pub struct StoreOptions {
     pub durability: Durability,
+    pub max_log_size: Option<u64>,
 }
 
 impl Default for StoreOptions {
     fn default() -> Self {
-        Self { durability: Durability::Flush}
+        Self { 
+            durability: Durability::Flush,
+            max_log_size: None,
+        }
     }
 }
 

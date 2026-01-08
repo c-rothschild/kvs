@@ -3,7 +3,6 @@ use kvs::config::{Durability, StoreOptions};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
-use std::path::Path;
 
 use kvs::store::Store;
 use kvs::error::Result;
@@ -71,21 +70,14 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let opts = StoreOptions {
-        durability: cli.durability
+        durability: cli.durability,
+        max_log_size: None,
     };
 
     let mut store = Store::open(&cli.log, opts)?;
 
     match cli.cmd {
         Command::Server { addr } => {
-
-            let log_path = cli.log.clone();
-            let base_dir = cli.log.parent()
-                .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
-                .unwrap_or_else(|| {
-                    std::env::current_dir()
-                        .unwrap_or_else(|_| PathBuf::from("."))
-                });
 
             // create channel
             let (sender, receiver) = mpsc::channel();
@@ -103,7 +95,7 @@ fn run() -> Result<()> {
 
             // Run server
             let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(kvs::server::run_server(&addr, handle, log_path, base_dir))?;
+            rt.block_on(kvs::server::run_server(&addr, handle))?;
 
         }
         Command::Set { key, value } => {
@@ -128,11 +120,7 @@ fn run() -> Result<()> {
         }
         Command::Scan{ prefix } => scan(&store, prefix.as_deref())?,
         Command::Snapshot => {
-            let base_dir = cli.log.parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf();
-
-            store.create_snapshot(&cli.log, &base_dir)?;
+            store.create_snapshot()?;
         }
     }
     Ok(())
