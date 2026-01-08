@@ -18,6 +18,9 @@ struct Cli {
     #[arg(long, default_value = "flush", value_parser = parse_durability)]
     durability: Durability,
 
+    #[arg(long, value_parser = parse_max_log_size, help = "Maximum log file size before auto-snapshot (e.g., '10MB', '1GB', '1048576')")]
+    max_log_size: Option<u64>,
+
     #[command(subcommand)]
     cmd: Command,
 }
@@ -38,6 +41,28 @@ fn parse_durability(s: &str) -> std::result::Result<Durability, String> {
         }
         _ => Err(format!("invalid durability mode: {s}. Use 'flush', 'fsync-always', or 'fsync-every-n:<number>'"))
     }
+}
+
+fn parse_max_log_size(s: &str) -> std::result::Result<u64, String> {
+    let s = s.trim();
+
+    if let Some(s) = s.strip_suffix("KB") {
+        let n: u64 = s.parse()
+            .map_err(|e| format!("invalid number: {e}"))?;
+        Ok(n * 1024)
+    } else if let Some(s) = s.strip_suffix("MB"){
+        let n: u64 = s.parse()
+            .map_err(|e| format!("invalid number: {e}"))?;
+        Ok(n * 1024 * 1024)
+    } else if let Some(s) = s.strip_suffix("GB"){
+        let n: u64 = s.parse()
+            .map_err(|e| format!("invalid number: {e}"))?;
+        Ok(n * 1024 * 1024 * 1024)
+    } else {
+        s.parse::<u64>()
+            .map_err(|e| format!("invalid size: {e}. Use format like '10MB', '1GB', or raw bytes like '1048576'"))
+    }
+    
 }
 
 #[derive(Subcommand, Debug)]
@@ -71,7 +96,7 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     let opts = StoreOptions {
         durability: cli.durability,
-        max_log_size: None,
+        max_log_size: cli.max_log_size,
     };
 
     let mut store = Store::open(&cli.log, opts)?;
